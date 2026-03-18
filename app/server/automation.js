@@ -5,6 +5,10 @@ const Anthropic  = require('@anthropic-ai/sdk');
 
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID || '';
 const SHEET_NAME     = 'Products';
+const HEADER_ROW = [[
+  'keyword', 'product_idea', 'product_type',
+  'bundle_content', 'title', 'tags', 'description', 'status', 'created_at',
+]];
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -22,6 +26,10 @@ async function getAuthClient() {
   });
   console.log('✅ Google Sheets auth ready');
   return _authClient;
+}
+
+function getSheetRange(range) {
+  return `'${SHEET_NAME.replace(/'/g, "''")}'!${range}`;
 }
 
 const KEYWORD_POOL = [
@@ -58,6 +66,26 @@ Rules: JSON only, no markdown, title max 80 chars, tags = 13 comma-separated key
   return product;
 }
 
+async function ensureSheetExists(sheets) {
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId: SPREADSHEET_ID,
+    fields: 'sheets.properties.title',
+  });
+  const sheetExists = spreadsheet.data.sheets?.some(
+    ({ properties }) => properties?.title === SHEET_NAME,
+  );
+
+  if (!sheetExists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: SHEET_NAME } } }],
+      },
+    });
+    console.log(`🗂️ Sheet created: "${SHEET_NAME}"`);
+  }
+}
+
 async function insertToGoogleSheets(keyword, product) {
   console.log('📊 Inserting to Google Sheets...');
   const auth   = await getAuthClient();
@@ -65,13 +93,13 @@ async function insertToGoogleSheets(keyword, product) {
   const createdAt = new Date().toISOString().replace('T',' ').slice(0,19);
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_NAME}!A2`,
+    range: getSheetRange('A2:I'),
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [[
       keyword, product.product_idea, product.product_type,
       product.bundle_content, product.title, product.tags,
-      product.description, 'idea_generated', createdAt
+      product.description, 'idea_generated', createdAt,
     ]]},
   });
   console.log(`✅ Row inserted: "${product.title}"`);
@@ -80,15 +108,19 @@ async function insertToGoogleSheets(keyword, product) {
 async function ensureSheetHeaders() {
   const auth   = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
+  await ensureSheetExists(sheets);
+
   const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A2`,
+    spreadsheetId: SPREADSHEET_ID,
+    range: getSheetRange('1:1'),
   });
-  if (!res.data.values || res.data.values.length === 0) {
+
+  if (!res.data.values || res.data.values.length === 0 || res.data.values[0].every(cell => !cell)) {
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A2`,
+      spreadsheetId: SPREADSHEET_ID,
+      range: getSheetRange('A1:I1'),
       valueInputOption: 'RAW',
-      requestBody: { values: [['keyword','product_idea','product_type',
-        'bundle_content','title','tags','description','status','created_at']] },
+      requestBody: { values: HEADER_ROW },
     });
     console.log('📝 Headers written');
   }
@@ -106,4 +138,4 @@ async function runAutomation() {
   return { keyword, product };
 }
 
-module.exports = { runAutomation };
+module.exports = { runAutomation, getSheetRange, ensureSheetExists, ensureSheetHeaders };
