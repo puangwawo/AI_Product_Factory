@@ -1,18 +1,17 @@
 const path = require('path');
 const fs = require('fs');
 const { google } = require('googleapis');
-const Anthropic = require('@anthropic-ai/sdk');
 
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID || '';
 const SHEET_NAME = 'Products';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
 const HEADER_ROW = [[
   'keyword', 'product_idea', 'product_type',
   'bundle_content', 'title', 'tags', 'description', 'status', 'created_at',
 ]];
 
-const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-const anthropic = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
+const openaiApiKey = process.env.OPENAI_API_KEY;
 
 let _authClient = null;
 async function getAuthClient() {
@@ -52,12 +51,22 @@ function generateKeyword() {
   return keyword;
 }
 
-function extractTextFromAnthropicResponse(response) {
-  return response.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n')
-    .trim();
+function extractTextFromOpenAIResponse(response) {
+  if (typeof response.output_text === 'string' && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+
+  const content = [];
+
+  for (const item of response.output || []) {
+    for (const entry of item.content || []) {
+      if (entry.type === 'output_text' && entry.text) {
+        content.push(entry.text);
+      }
+    }
+  }
+
+  return content.join('\n').trim();
 }
 
 function parseProductJson(raw) {
@@ -74,23 +83,33 @@ function parseProductJson(raw) {
 }
 
 async function generateProductWithAI(keyword) {
-  if (!anthropic) {
-    throw new Error('ANTHROPIC_API_KEY is not set');
+  if (!openaiApiKey) {
+    throw new Error('OPENAI_API_KEY is not set');
   }
 
-  console.log(`🤖 Sending to Anthropic: "${keyword}"`);
+  console.log(`🤖 Sending to OpenAI: "${keyword}"`);
 
-  const response = await anthropic.messages.create({
-    model: 'claude-3-5-haiku-latest',
-    max_tokens: 400,
-    temperature: 0.7,
-    messages: [{
-      role: 'user',
-      content: `You are a digital product expert. Given keyword: "${keyword}", return ONLY JSON:\n{"product_idea":"...","product_type":"...","bundle_content":"...","title":"...","tags":"...","description":"..."}\nRules: JSON only, title max 80 chars, tags = 13 comma-separated keywords.`,
-    }],
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      temperature: 0.7,
+      max_output_tokens: 400,
+      input: `You are a digital product expert. Given keyword: "${keyword}", return ONLY JSON:\n{"product_idea":"...","product_type":"...","bundle_content":"...","title":"...","tags":"...","description":"..."}\nRules: JSON only, title max 80 chars, tags = 13 comma-separated keywords.`,
+    }),
   });
 
-  const raw = extractTextFromAnthropicResponse(response);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenAI API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const raw = extractTextFromOpenAIResponse(data);
   const product = parseProductJson(raw);
 
   console.log(`✅ Generated: "${product.title}"`);
@@ -196,6 +215,6 @@ module.exports = {
   getSheetRange,
   ensureSheetExists,
   ensureSheetHeaders,
-  extractTextFromAnthropicResponse,
+  extractTextFromOpenAIResponse,
   parseProductJson,
 };
