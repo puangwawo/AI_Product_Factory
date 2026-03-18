@@ -1,0 +1,12 @@
+{
+  "name": "ai-product-factory",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server/run-once.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "googleapis": "^126.0.1",
+    "dotenv": "^16.0.0"
+  }
+}
