@@ -65,7 +65,7 @@ async function insertToGoogleSheets(keyword, product) {
   const createdAt = new Date().toISOString().replace('T',' ').slice(0,19);
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_NAME}!A:I`,
+    range: `${SHEET_NAME}!A1`,
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [[
