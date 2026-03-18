@@ -1,17 +1,18 @@
-const path       = require('path');
-const fs         = require('fs');
+const path = require('path');
+const fs = require('fs');
 const { google } = require('googleapis');
-const OpenAI     = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID || '';
-const SHEET_NAME     = 'Products';
+const SHEET_NAME = 'Products';
 
 const HEADER_ROW = [[
   'keyword', 'product_idea', 'product_type',
   'bundle_content', 'title', 'tags', 'description', 'status', 'created_at',
 ]];
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+const anthropic = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
 
 let _authClient = null;
 async function getAuthClient() {
@@ -38,11 +39,11 @@ function getSheetRange(range) {
 }
 
 const KEYWORD_POOL = [
-  'adhd planner','budget planner','meal planner','habit tracker',
-  'gratitude journal','anxiety journal','fitness tracker','study planner',
-  'social media content calendar','business expense tracker',
-  'self-care planner','reading tracker','digital vision board',
-  'notion dashboard template','resume template',
+  'adhd planner', 'budget planner', 'meal planner', 'habit tracker',
+  'gratitude journal', 'anxiety journal', 'fitness tracker', 'study planner',
+  'social media content calendar', 'business expense tracker',
+  'self-care planner', 'reading tracker', 'digital vision board',
+  'notion dashboard template', 'resume template',
 ];
 
 function generateKeyword() {
@@ -51,29 +52,46 @@ function generateKeyword() {
   return keyword;
 }
 
-async function generateProductWithAI(keyword) {
-  console.log(`🤖 Sending to OpenAI: "${keyword}"`);
+function extractTextFromAnthropicResponse(response) {
+  return response.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+    .trim();
+}
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{
-      role: "user",
-      content: `You are a digital product expert. Given keyword: "${keyword}", return ONLY JSON:
-{"product_idea":"...","product_type":"...","bundle_content":"...","title":"...","tags":"...","description":"..."}
-Rules: JSON only, title max 80 chars, tags = 13 comma-separated keywords.`
-    }],
-    temperature: 0.7,
-  });
-
-  const raw = response.choices[0].message.content.trim();
-
-  let product;
+function parseProductJson(raw) {
   try {
-    product = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch {
     const match = raw.match(/\{[\s\S]*\}/);
-    product = JSON.parse(match[0]);
+    if (!match) {
+      throw new Error(`Model response did not contain valid JSON: ${raw}`);
+    }
+
+    return JSON.parse(match[0]);
   }
+}
+
+async function generateProductWithAI(keyword) {
+  if (!anthropic) {
+    throw new Error('ANTHROPIC_API_KEY is not set');
+  }
+
+  console.log(`🤖 Sending to Anthropic: "${keyword}"`);
+
+  const response = await anthropic.messages.create({
+    model: 'claude-3-5-haiku-latest',
+    max_tokens: 400,
+    temperature: 0.7,
+    messages: [{
+      role: 'user',
+      content: `You are a digital product expert. Given keyword: "${keyword}", return ONLY JSON:\n{"product_idea":"...","product_type":"...","bundle_content":"...","title":"...","tags":"...","description":"..."}\nRules: JSON only, title max 80 chars, tags = 13 comma-separated keywords.`,
+    }],
+  });
+
+  const raw = extractTextFromAnthropicResponse(response);
+  const product = parseProductJson(raw);
 
   console.log(`✅ Generated: "${product.title}"`);
   return product;
@@ -104,10 +122,10 @@ async function ensureSheetExists(sheets) {
 async function insertToGoogleSheets(keyword, product) {
   console.log('📊 Inserting to Google Sheets...');
 
-  const auth   = await getAuthClient();
+  const auth = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
 
-  const createdAt = new Date().toISOString().replace('T',' ').slice(0,19);
+  const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
@@ -125,7 +143,7 @@ async function insertToGoogleSheets(keyword, product) {
         product.description,
         'idea_generated',
         createdAt,
-      ]]
+      ]],
     },
   });
 
@@ -133,7 +151,7 @@ async function insertToGoogleSheets(keyword, product) {
 }
 
 async function ensureSheetHeaders() {
-  const auth   = await getAuthClient();
+  const auth = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
 
   await ensureSheetExists(sheets);
@@ -143,7 +161,7 @@ async function ensureSheetHeaders() {
     range: getSheetRange('A1:I1'),
   });
 
-  if (!res.data.values || res.data.values.length === 0 || res.data.values[0].every(cell => !cell)) {
+  if (!res.data.values || res.data.values.length === 0 || res.data.values[0].every((cell) => !cell)) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: getSheetRange('A1:I1'),
@@ -168,7 +186,7 @@ async function runAutomation() {
 
   await insertToGoogleSheets(keyword, product);
 
-  console.log(`🎉 Done in ${((Date.now()-start)/1000).toFixed(1)}s\n`);
+  console.log(`🎉 Done in ${((Date.now() - start) / 1000).toFixed(1)}s\n`);
 
   return { keyword, product };
 }
@@ -177,5 +195,7 @@ module.exports = {
   runAutomation,
   getSheetRange,
   ensureSheetExists,
-  ensureSheetHeaders
+  ensureSheetHeaders,
+  extractTextFromAnthropicResponse,
+  parseProductJson,
 };
