@@ -65,7 +65,7 @@ async function insertToGoogleSheets(keyword, product) {
   const createdAt = new Date().toISOString().replace('T',' ').slice(0,19);
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_NAME}!A1`,
+    range: `${SHEET_NAME}!A2`,
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [[
@@ -81,11 +81,11 @@ async function ensureSheetHeaders() {
   const auth   = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
   const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1`,
+    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A2`,
   });
   if (!res.data.values || res.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1`,
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A2`,
       valueInputOption: 'RAW',
       requestBody: { values: [['keyword','product_idea','product_type',
         'bundle_content','title','tags','description','status','created_at']] },
