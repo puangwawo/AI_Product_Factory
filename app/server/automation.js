@@ -81,11 +81,11 @@ async function ensureSheetHeaders() {
   const auth   = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
   const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:I`,
+    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1`,
   });
   if (!res.data.values || res.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:I`,
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1`,
       valueInputOption: 'RAW',
       requestBody: { values: [['keyword','product_idea','product_type',
         'bundle_content','title','tags','description','status','created_at']] },
