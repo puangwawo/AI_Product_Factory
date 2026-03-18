@@ -93,7 +93,7 @@ async function insertToGoogleSheets(keyword, product) {
   const createdAt = new Date().toISOString().replace('T',' ').slice(0,19);
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: getSheetRange('A2:I'),
+    range: getSheetRange('A:I'),
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [[
@@ -112,7 +112,7 @@ async function ensureSheetHeaders() {
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
-    range: getSheetRange('1:1'),
+    range: getSheetRange('A1:I1'),
   });
 
   if (!res.data.values || res.data.values.length === 0 || res.data.values[0].every(cell => !cell)) {
