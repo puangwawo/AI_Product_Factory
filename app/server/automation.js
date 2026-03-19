@@ -6,10 +6,28 @@ const { Client } = require('@notionhq/client');
 
 const SPREADSHEET_ID  = process.env.GOOGLE_SHEETS_ID || '';
 const SHEET_NAME      = 'Products';
-const NOTION_DB_ID    = process.env.NOTION_DATABASE_ID || '';
 
 const openai  = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const notion  = new Client({ auth: process.env.NOTION_API_KEY });
+
+function normalizeNotionId(value) {
+  if (!value) return '';
+
+  const trimmed = value.trim();
+  const uuidMatch = trimmed.match(/[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+  if (!uuidMatch) return '';
+
+  const compact = uuidMatch[0].replace(/-/g, '').toLowerCase();
+  return [
+    compact.slice(0, 8),
+    compact.slice(8, 12),
+    compact.slice(12, 16),
+    compact.slice(16, 20),
+    compact.slice(20, 32),
+  ].join('-');
+}
+
+const NOTION_DB_ID = normalizeNotionId(process.env.NOTION_DATABASE_ID || '');
 
 // ─── Google Auth ──────────────────────────────────────────────────────────────
 let _authClient = null;
@@ -86,9 +104,13 @@ async function insertToGoogleSheets(keyword, product) {
 
 // ─── Notion Insert ────────────────────────────────────────────────────────────
 async function insertToNotion(keyword, product) {
-  if (!NOTION_DB_ID) {
+  if (!process.env.NOTION_DATABASE_ID) {
     console.log('⚠️  NOTION_DATABASE_ID not set, skipping Notion');
     return;
+  }
+
+  if (!NOTION_DB_ID) {
+    throw new Error('NOTION_DATABASE_ID must be a Notion database ID or database URL that contains a valid UUID');
   }
   console.log('📝 Creating Notion page...');
 
