@@ -28,6 +28,7 @@ function normalizeNotionId(value) {
 }
 
 const NOTION_DB_ID = normalizeNotionId(process.env.NOTION_DATABASE_ID || '');
+let _notionDatabase = null;
 
 // ─── Google Auth ──────────────────────────────────────────────────────────────
 let _authClient = null;
@@ -102,6 +103,115 @@ async function insertToGoogleSheets(keyword, product) {
   console.log(`✅ Sheets row inserted: "${product.title}"`);
 }
 
+async function getNotionDatabase() {
+  if (_notionDatabase) return _notionDatabase;
+
+  _notionDatabase = await notion.databases.retrieve({ database_id: NOTION_DB_ID });
+  return _notionDatabase;
+}
+
+function normalizePropertyName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function buildTextProperty(type, value) {
+  const content = String(value || '').trim();
+  if (!content) return null;
+
+  if (type === 'rich_text') {
+    return { rich_text: [{ text: { content } }] };
+  }
+
+  if (type === 'title') {
+    return { title: [{ text: { content } }] };
+  }
+
+  return null;
+}
+
+function buildSelectProperty(schema, value) {
+  const content = String(value || '').trim();
+  if (!content) return null;
+
+  const options = schema[typeof schema.select === 'object' ? 'select' : 'status']?.options || [];
+  const exactMatch = options.find(option => option.name === content);
+  const caseInsensitiveMatch = options.find(option => option.name.toLowerCase() === content.toLowerCase());
+  const selected = exactMatch || caseInsensitiveMatch;
+
+  if (schema.type === 'status') {
+    const fallback = selected || options[0];
+    return fallback ? { status: { name: fallback.name } } : null;
+  }
+
+  return { select: selected ? { name: selected.name } : { name: content } };
+}
+
+function buildDateProperty(value) {
+  if (!value) return null;
+  return { date: { start: value } };
+}
+
+function matchProperty(properties, ...aliases) {
+  const normalizedAliases = aliases.map(normalizePropertyName);
+  return Object.entries(properties).find(([name]) => normalizedAliases.includes(normalizePropertyName(name)));
+}
+
+function buildNotionProperties(database, keyword, product) {
+  const properties = {};
+  const schema = database.properties || {};
+  const nowIso = new Date().toISOString();
+
+  const titleEntry = Object.entries(schema).find(([, config]) => config.type === 'title');
+  if (!titleEntry) {
+    throw new Error('Notion database requires one title property.');
+  }
+  properties[titleEntry[0]] = buildTextProperty('title', product.title || keyword);
+
+  const mappings = [
+    { aliases: ['keyword'], value: keyword, types: ['rich_text', 'title'] },
+    { aliases: ['product_idea', 'product idea', 'idea'], value: product.product_idea, types: ['rich_text'] },
+    { aliases: ['product_type', 'product type', 'type'], value: product.product_type, types: ['select', 'rich_text'] },
+    { aliases: ['bundle_content', 'bundle content', 'content'], value: product.bundle_content, types: ['rich_text'] },
+    { aliases: ['tags', 'keywords'], value: product.tags, types: ['rich_text', 'multi_select'] },
+    { aliases: ['description', 'desc'], value: product.description, types: ['rich_text'] },
+    { aliases: ['status'], value: 'idea_generated', types: ['status', 'select'] },
+    { aliases: ['created_at', 'created at', 'date'], value: nowIso, types: ['date'] },
+  ];
+
+  for (const mapping of mappings) {
+    const match = matchProperty(schema, ...mapping.aliases);
+    if (!match) continue;
+
+    const [propertyName, propertySchema] = match;
+    let propertyValue = null;
+
+    if (propertySchema.type === 'title' || propertySchema.type === 'rich_text') {
+      propertyValue = buildTextProperty(propertySchema.type, mapping.value);
+    } else if (propertySchema.type === 'select' || propertySchema.type === 'status') {
+      propertyValue = buildSelectProperty(propertySchema, mapping.value);
+    } else if (propertySchema.type === 'date') {
+      propertyValue = buildDateProperty(mapping.value);
+    } else if (propertySchema.type === 'multi_select') {
+      const items = String(mapping.value || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean)
+        .map(name => ({ name }));
+      if (items.length > 0) propertyValue = { multi_select: items };
+    }
+
+    if (propertyValue) {
+      properties[propertyName] = propertyValue;
+    }
+  }
+
+  return properties;
+}
+
 // ─── Notion Insert ────────────────────────────────────────────────────────────
 async function insertToNotion(keyword, product) {
   if (!process.env.NOTION_DATABASE_ID) {
@@ -114,37 +224,12 @@ async function insertToNotion(keyword, product) {
   }
   console.log('📝 Creating Notion page...');
 
+  const database = await getNotionDatabase();
+  const properties = buildNotionProperties(database, keyword, product);
+
   await notion.pages.create({
     parent: { database_id: NOTION_DB_ID },
-    properties: {
-      title: {
-        title: [{ text: { content: product.title || keyword } }]
-      },
-      keyword: {
-        rich_text: [{ text: { content: keyword } }]
-      },
-      product_idea: {
-        rich_text: [{ text: { content: product.product_idea || '' } }]
-      },
-      product_type: {
-        select: { name: product.product_type || 'Other' }
-      },
-      bundle_content: {
-        rich_text: [{ text: { content: product.bundle_content || '' } }]
-      },
-      tags: {
-        rich_text: [{ text: { content: product.tags || '' } }]
-      },
-      description: {
-        rich_text: [{ text: { content: product.description || '' } }]
-      },
-      status: {
-        select: { name: 'idea_generated' }
-      },
-      created_at: {
-        date: { start: new Date().toISOString() }
-      },
-    },
+    properties,
   });
 
   console.log(`✅ Notion page created: "${product.title}"`);
@@ -178,7 +263,6 @@ async function runAutomation() {
   const keyword = generateKeyword();
   const product = await generateProductWithAI(keyword);
 
-  // Jalankan Google Sheets & Notion bersamaan (parallel)
   await Promise.all([
     insertToGoogleSheets(keyword, product),
     insertToNotion(keyword, product),
@@ -188,4 +272,4 @@ async function runAutomation() {
   return { keyword, product };
 }
 
-module.exports = { runAutomation };
+module.exports = { runAutomation, buildNotionProperties, normalizePropertyName };
