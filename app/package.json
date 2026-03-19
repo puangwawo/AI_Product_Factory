@@ -1,11 +1,1 @@
-{
-  "name": "ai-product-factory",
-  "version": "1.0.0",
-  "scripts": {
-    "start": "node server/run-once.js"
-  },
-  "dependencies": {
-    "dotenv": "^16.0.0",
-    "googleapis": "^126.0.1"
-  }
-}
+{"name":"ai-product-factory","version":"1.0.0","scripts":{"start":"node server/run-once.js"},"dependencies":{"openai":"^4.0.0","googleapis":"^126.0.1","dotenv":"^16.0.0","@notionhq/client":"^2.2.15"}}
