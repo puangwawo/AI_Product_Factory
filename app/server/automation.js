@@ -1,48 +1,40 @@
-const path = require('path');
-const fs = require('fs');
+const path       = require('path');
+const fs         = require('fs');
 const { google } = require('googleapis');
+const OpenAI     = require('openai');
+const { Client } = require('@notionhq/client');
 
-const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID || '';
-const SHEET_NAME = 'Products';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const SPREADSHEET_ID  = process.env.GOOGLE_SHEETS_ID || '';
+const SHEET_NAME      = 'Products';
+const NOTION_DB_ID    = process.env.NOTION_DATABASE_ID || '';
 
-const HEADER_ROW = [[
-  'keyword', 'product_idea', 'product_type',
-  'bundle_content', 'title', 'tags', 'description', 'status', 'created_at',
-]];
+const openai  = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const notion  = new Client({ auth: process.env.NOTION_API_KEY });
 
-const openaiApiKey = process.env.OPENAI_API_KEY;
-
+// ─── Google Auth ──────────────────────────────────────────────────────────────
 let _authClient = null;
 async function getAuthClient() {
   if (_authClient) return _authClient;
-
   const credentialsEnv = process.env.GOOGLE_CREDENTIALS;
   if (!credentialsEnv) throw new Error('GOOGLE_CREDENTIALS is not set');
-
   const credentials = credentialsEnv.trim().startsWith('{')
     ? JSON.parse(credentialsEnv)
     : JSON.parse(fs.readFileSync(path.resolve(__dirname, credentialsEnv), 'utf8'));
-
   _authClient = new google.auth.GoogleAuth({
     credentials,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
-
   console.log('✅ Google Sheets auth ready');
   return _authClient;
 }
 
-function getSheetRange(range) {
-  return `'${SHEET_NAME.replace(/'/g, "''")}'!${range}`;
-}
-
+// ─── Keyword Pool ─────────────────────────────────────────────────────────────
 const KEYWORD_POOL = [
-  'adhd planner', 'budget planner', 'meal planner', 'habit tracker',
-  'gratitude journal', 'anxiety journal', 'fitness tracker', 'study planner',
-  'social media content calendar', 'business expense tracker',
-  'self-care planner', 'reading tracker', 'digital vision board',
-  'notion dashboard template', 'resume template',
+  'adhd planner','budget planner','meal planner','habit tracker',
+  'gratitude journal','anxiety journal','fitness tracker','study planner',
+  'social media content calendar','business expense tracker',
+  'self-care planner','reading tracker','digital vision board',
+  'notion dashboard template','resume template',
 ];
 
 function generateKeyword() {
@@ -51,170 +43,127 @@ function generateKeyword() {
   return keyword;
 }
 
-function extractTextFromOpenAIResponse(response) {
-  if (typeof response.output_text === 'string' && response.output_text.trim()) {
-    return response.output_text.trim();
-  }
-
-  const content = [];
-
-  for (const item of response.output || []) {
-    for (const entry of item.content || []) {
-      if (entry.type === 'output_text' && entry.text) {
-        content.push(entry.text);
-      }
-    }
-  }
-
-  return content.join('\n').trim();
-}
-
-function parseProductJson(raw) {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) {
-      throw new Error(`Model response did not contain valid JSON: ${raw}`);
-    }
-
-    return JSON.parse(match[0]);
-  }
-}
-
+// ─── OpenAI Generate ──────────────────────────────────────────────────────────
 async function generateProductWithAI(keyword) {
-  if (!openaiApiKey) {
-    throw new Error('OPENAI_API_KEY is not set');
-  }
-
   console.log(`🤖 Sending to OpenAI: "${keyword}"`);
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openaiApiKey}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      temperature: 0.7,
-      max_output_tokens: 400,
-      input: `You are a digital product expert. Given keyword: "${keyword}", return ONLY JSON:\n{"product_idea":"...","product_type":"...","bundle_content":"...","title":"...","tags":"...","description":"..."}\nRules: JSON only, title max 80 chars, tags = 13 comma-separated keywords.`,
-    }),
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{
+      role: 'user',
+      content: `You are a digital product expert. Given keyword: "${keyword}", return ONLY JSON:
+{"product_idea":"...","product_type":"...","bundle_content":"...","title":"...","tags":"...","description":"..."}
+Rules: JSON only, no markdown, title max 80 chars, tags = 13 comma-separated keywords.`
+    }],
+    temperature: 0.7,
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-  const raw = extractTextFromOpenAIResponse(data);
-  const product = parseProductJson(raw);
-
+  const raw = response.choices[0].message.content.trim();
+  let product;
+  try { product = JSON.parse(raw); }
+  catch { const m = raw.match(/\{[\s\S]*\}/); product = JSON.parse(m[0]); }
   console.log(`✅ Generated: "${product.title}"`);
   return product;
 }
 
-async function ensureSheetExists(sheets) {
-  const spreadsheet = await sheets.spreadsheets.get({
-    spreadsheetId: SPREADSHEET_ID,
-    fields: 'sheets.properties.title',
-  });
-
-  const sheetExists = spreadsheet.data.sheets?.some(
-    ({ properties }) => properties?.title === SHEET_NAME
-  );
-
-  if (!sheetExists) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        requests: [{ addSheet: { properties: { title: SHEET_NAME } } }],
-      },
-    });
-
-    console.log(`🗂️ Sheet created: "${SHEET_NAME}"`);
-  }
-}
-
+// ─── Google Sheets Insert ─────────────────────────────────────────────────────
 async function insertToGoogleSheets(keyword, product) {
   console.log('📊 Inserting to Google Sheets...');
-
-  const auth = await getAuthClient();
+  const auth   = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
-
-  const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
-
+  const createdAt = new Date().toISOString().replace('T',' ').slice(0,19);
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: getSheetRange('A:I'),
+    range: `${SHEET_NAME}!A:I`,
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
-    requestBody: {
-      values: [[
-        keyword,
-        product.product_idea,
-        product.product_type,
-        product.bundle_content,
-        product.title,
-        product.tags,
-        product.description,
-        'idea_generated',
-        createdAt,
-      ]],
+    requestBody: { values: [[
+      keyword, product.product_idea, product.product_type,
+      product.bundle_content, product.title, product.tags,
+      product.description, 'idea_generated', createdAt
+    ]]},
+  });
+  console.log(`✅ Sheets row inserted: "${product.title}"`);
+}
+
+// ─── Notion Insert ────────────────────────────────────────────────────────────
+async function insertToNotion(keyword, product) {
+  if (!NOTION_DB_ID) {
+    console.log('⚠️  NOTION_DATABASE_ID not set, skipping Notion');
+    return;
+  }
+  console.log('📝 Creating Notion page...');
+
+  await notion.pages.create({
+    parent: { database_id: NOTION_DB_ID },
+    properties: {
+      title: {
+        title: [{ text: { content: product.title || keyword } }]
+      },
+      keyword: {
+        rich_text: [{ text: { content: keyword } }]
+      },
+      product_idea: {
+        rich_text: [{ text: { content: product.product_idea || '' } }]
+      },
+      product_type: {
+        select: { name: product.product_type || 'Other' }
+      },
+      bundle_content: {
+        rich_text: [{ text: { content: product.bundle_content || '' } }]
+      },
+      tags: {
+        rich_text: [{ text: { content: product.tags || '' } }]
+      },
+      description: {
+        rich_text: [{ text: { content: product.description || '' } }]
+      },
+      status: {
+        select: { name: 'idea_generated' }
+      },
+      created_at: {
+        date: { start: new Date().toISOString() }
+      },
     },
   });
 
-  console.log(`✅ Row inserted: "${product.title}"`);
+  console.log(`✅ Notion page created: "${product.title}"`);
 }
 
+// ─── Headers Check ────────────────────────────────────────────────────────────
 async function ensureSheetHeaders() {
-  const auth = await getAuthClient();
+  const auth   = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
-
-  await ensureSheetExists(sheets);
-
   const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: getSheetRange('A1:I1'),
+    spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:I1`,
   });
-
-  if (!res.data.values || res.data.values.length === 0 || res.data.values[0].every((cell) => !cell)) {
+  if (!res.data.values || res.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: getSheetRange('A1:I1'),
+      spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:I1`,
       valueInputOption: 'RAW',
-      requestBody: { values: HEADER_ROW },
+      requestBody: { values: [['keyword','product_idea','product_type',
+        'bundle_content','title','tags','description','status','created_at']] },
     });
-
     console.log('📝 Headers written');
   }
 }
 
+// ─── Main Pipeline ────────────────────────────────────────────────────────────
 async function runAutomation() {
   const start = Date.now();
-
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`🚀 Started at ${new Date().toLocaleString()}`);
 
   await ensureSheetHeaders();
-
   const keyword = generateKeyword();
   const product = await generateProductWithAI(keyword);
 
-  await insertToGoogleSheets(keyword, product);
+  // Jalankan Google Sheets & Notion bersamaan (parallel)
+  await Promise.all([
+    insertToGoogleSheets(keyword, product),
+    insertToNotion(keyword, product),
+  ]);
 
-  console.log(`🎉 Done in ${((Date.now() - start) / 1000).toFixed(1)}s\n`);
-
+  console.log(`🎉 Done in ${((Date.now()-start)/1000).toFixed(1)}s\n`);
   return { keyword, product };
 }
 
-module.exports = {
-  runAutomation,
-  getSheetRange,
-  ensureSheetExists,
-  ensureSheetHeaders,
-  extractTextFromOpenAIResponse,
-  parseProductJson,
-};
+module.exports = { runAutomation };
